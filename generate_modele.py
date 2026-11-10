@@ -43,15 +43,18 @@ lines = [
     ("VOLUMETRIE RESEAU DATACENTER - MODE D'EMPLOI", TITLE_FONT),
     ("", None),
     ("Principe : calcul BOTTOM-UP par POD, calibre sur les mesures disponibles (releves FAI, SNMP coeur de reseau, compteurs de stockage).", None),
+    ("Multi-datacenter : la colonne 'Datacenter' de l'inventaire permet de consolider par site (onglet Synthese DC).", None),
     ("", None),
-    ("1. Onglet Parametres : facteurs globaux (simultaneite, crete/moyenne, croissance, marge, horizon).", None),
+    ("1. Onglet Parametres : facteurs globaux (simultaneite, crete/moyenne, croissance, marge, horizon) et noms des datacenters.", None),
     ("2. Onglet Profils : un profil par categorie applicative = debit moyen par serveur + repartition du flux", None),
     ("   (sortant internet / entrant internet / interne LAN / replication inter-DC). Les parts doivent totaliser 100 %.", None),
-    ("3. Onglet Inventaire : une ligne par POD. Renseignez salle, POD, nb de baies, serveurs/baie et categorie.", None),
+    ("3. Onglet Inventaire : une ligne par POD. Renseignez datacenter, salle, POD, nb de baies, serveurs/baie et categorie.", None),
     ("   Le nb de serveurs et les debits se calculent seuls. Ajoutez autant de lignes que necessaire", None),
     ("   (les formules sont pre-posees jusqu'a la ligne 100).", None),
-    ("4. Onglet Resultats : volumetrie par direction (moyenne, crete, volumes mensuels), projection a l'horizon", None),
+    ("4. Onglet Resultats : volumetrie globale par direction (moyenne, crete, volumes mensuels), projection a l'horizon", None),
     ("   choisi et capacite de dimensionnement recommandee.", None),
+    ("5. Onglet Synthese DC : volumetrie par datacenter, trafic WAN inter-DC (decompte simple vs double comptage)", None),
+    ("   et scenario de bascule N+1 (choix du DC defaillant et taux de bascule).", None),
     ("", None),
     ("Regles de conversion utilisees :", SEC_FONT),
     ("   1 Mbps soutenu pendant 1 mois de 30 jours = 0,324 To       (1 Mbps = 0,125 Mo/s)", None),
@@ -59,10 +62,13 @@ lines = [
     ("", None),
     ("Points de vigilance :", SEC_FONT),
     ("   - Ne jamais sommer les debits nominaux des NIC : utiliser les profils mesures (5-15 % d'utilisation moyenne).", None),
-    ("   - La crete agrregee est calculee POD par POD puis sommee : c'est le 95e centile approche, base de dimensionnement.", None),
+    ("   - La crete agregee est calculee POD par POD puis sommee : c'est le 95e centile approche, base de dimensionnement.", None),
     ("   - Ne pas oublier les flux transverses : sauvegardes, replication, mises a jour, monitoring (souvent 30-60 % du total).", None),
     ("   - Le trafic Est-Ouest interne ne sort jamais du datacenter : bien le distinguer du trafic internet (N-S).", None),
-    ("   - Calibrer : comparer le 'sortant internet' modelise aux releves 95e centile de votre FAI et ajuster les profils.", None),
+    ("   - La replication entre datacenters est comptee aux DEUX extremites : le total global double-compte ce flux,", None),
+    ("     l'onglet Synthese DC fournit le decompte simple (volume unique) et le decompte double (WAN a provisionner).", None),
+    ("   - Si un site n'a pas de sortie internet locale (backhaul vers un site principal), classer son trafic en WAN", None),
+    ("     (reduction de la part 'sortant internet' de ses profils) plutot qu'en internet.", None),
     ("", None),
     ("Calibration conseillee : si vous relevez X Mbps sortants internet chez le FAI et Y Mbps modelises ici,", None),
     ("appliquez Y/X comme coefficient correcteur sur la colonne 'Debit moyen / serveur' des profils.", None),
@@ -94,7 +100,16 @@ for r, (label, val, note, fmt) in enumerate(params, start=3):
     c.border = THIN
     c.fill = PatternFill("solid", fgColor="FFF2CC")
     ws.cell(row=r, column=3, value=note).font = Font(italic=True, color="808080")
-ws.cell(row=11, column=1, value="P = parametres").font = Font(italic=True, color="808080")
+
+ws.cell(row=11, column=1, value="Noms des datacenters (utilises par l'inventaire et la synthese)").font = SEC_FONT
+for c in range(1, 4):
+    ws.cell(row=11, column=c).fill = SEC_FILL
+for i in range(3):
+    r = 12 + i
+    ws.cell(row=r, column=1, value=f"Nom Datacenter {i+1}")
+    c = ws.cell(row=r, column=2, value=f"DC{i+1}")
+    c.border = THIN
+    c.fill = PatternFill("solid", fgColor="FFF2CC")
 
 P_JOURS = "Parametres!$B$3"
 P_SIM = "Parametres!$B$4"
@@ -134,63 +149,69 @@ for r in range(len(profils) + 3, 21):
         ws.cell(row=r, column=c).border = THIN
 ws.cell(row=21, column=1, value="Les 4 parts de chaque ligne doivent totaliser 100 % (controle colonne H ci-dessous).").font = Font(italic=True, color="808080")
 ws["H2"] = "Controle"
-style_header(ws, 2, 7)
+ws["H2"].font = HDR_FONT
 ws["H2"].fill = PatternFill("solid", fgColor="C00000")
+ws["H2"].border = THIN
 for r in range(3, 21):
     ws.cell(row=r, column=8, value=f'=IF(COUNTA(A{r})=0,"",IF(ROUND(SUM(C{r}:F{r}),4)=1,"OK","ERREUR : somme <> 100 %"))')
 
 # ---------------------------------------------------------------- Inventaire
 ws = wb.create_sheet("Inventaire")
-set_widths(ws, [12, 10, 10, 13, 12, 26, 14, 14, 14, 14, 14, 14])
+set_widths(ws, [13, 12, 10, 10, 13, 12, 26, 14, 14, 14, 14, 14, 14])
 ws["A1"] = "INVENTAIRE - une ligne par POD"
 ws["A1"].font = TITLE_FONT
-inv_headers = ["Salle", "POD", "Nb baies", "Serveurs / baie", "Nb serveurs", "Categorie",
+inv_headers = ["Datacenter", "Salle", "POD", "Nb baies", "Serveurs / baie", "Nb serveurs", "Categorie",
                "Trafic moyen (Mbps)", "Trafic crete (Mbps)",
                "Sortant internet (Mbps)", "Entrant internet (Mbps)", "Interne LAN (Mbps)", "Replication inter-DC (Mbps)"]
 for c, h in enumerate(inv_headers, start=1):
     ws.cell(row=2, column=c, value=h)
 style_header(ws, 2, len(inv_headers))
 exemple = [
-    ("Salle A", "A1", 24, 16, "Web / exposition publique"),
-    ("Salle A", "A2", 24, 16, "Applicatif metier"),
-    ("Salle A", "A3", 24, 12, "Base de donnees"),
-    ("Salle A", "A4", 24, 8, "Sauvegarde / stockage"),
-    ("Salle B", "B1", 24, 16, "Web / exposition publique"),
-    ("Salle B", "B2", 24, 16, "Applicatif metier"),
-    ("Salle B", "B3", 24, 10, "Base de donnees"),
-    ("Salle B", "B4", 24, 6, "Administration / outils"),
+    ("DC1", "Salle A", "A1", 24, 16, "Web / exposition publique"),
+    ("DC1", "Salle A", "A2", 24, 16, "Applicatif metier"),
+    ("DC1", "Salle A", "A3", 24, 12, "Base de donnees"),
+    ("DC1", "Salle A", "A4", 24, 8, "Sauvegarde / stockage"),
+    ("DC2", "Salle B", "B1", 24, 16, "Web / exposition publique"),
+    ("DC2", "Salle B", "B2", 24, 16, "Applicatif metier"),
+    ("DC2", "Salle B", "B3", 24, 10, "Base de donnees"),
+    ("DC2", "Salle B", "B4", 24, 6, "Administration / outils"),
+    ("DC3", "Salle C", "C1", 24, 14, "Web / exposition publique"),
+    ("DC3", "Salle C", "C2", 24, 12, "Applicatif metier"),
 ]
-for i, (salle, pod, baies, spb, cat) in enumerate(exemple):
+for i, (dc, salle, pod, baies, spb, cat) in enumerate(exemple):
     r = 3 + i
-    ws.cell(row=r, column=1, value=salle)
-    ws.cell(row=r, column=2, value=pod)
-    ws.cell(row=r, column=3, value=baies)
-    ws.cell(row=r, column=4, value=spb)
-    ws.cell(row=r, column=6, value=cat)
+    ws.cell(row=r, column=1, value=dc)
+    ws.cell(row=r, column=2, value=salle)
+    ws.cell(row=r, column=3, value=pod)
+    ws.cell(row=r, column=4, value=baies)
+    ws.cell(row=r, column=5, value=spb)
+    ws.cell(row=r, column=7, value=cat)
 for r in range(3, 101):
-    ws.cell(row=r, column=5, value=f'=IF(COUNTA(A{r}:D{r})=0,"",C{r}*D{r})')
-    ws.cell(row=r, column=7,
-            value=f'=IF($E{r}="","",ROUND($E{r}*VLOOKUP($F{r},Profils!$A$3:$B$20,2,FALSE)*{P_SIM},1))')
-    ws.cell(row=r, column=8, value=f'=IF($G{r}="","",ROUND($G{r}*{P_CRETE},1))')
-    for col, pcol in ((9, 3), (10, 4), (11, 5), (12, 6)):
+    ws.cell(row=r, column=6, value=f'=IF(COUNTA(B{r}:E{r})=0,"",D{r}*E{r})')
+    ws.cell(row=r, column=8,
+            value=f'=IF($F{r}="","",ROUND($F{r}*VLOOKUP($G{r},Profils!$A$3:$B$20,2,FALSE)*{P_SIM},1))')
+    ws.cell(row=r, column=9, value=f'=IF($H{r}="","",ROUND($H{r}*{P_CRETE},1))')
+    for col, pcol in ((10, 3), (11, 4), (12, 5), (13, 6)):
         ws.cell(row=r, column=col,
-                value=f'=IF($G{r}="","",ROUND($G{r}*VLOOKUP($F{r},Profils!$A$3:$F$20,{pcol},FALSE),1))')
-dv = DataValidation(type="list", formula1="Profils!$A$3:$A$20", allow_blank=True)
-ws.add_data_validation(dv)
-dv.add("F3:F100")
+                value=f'=IF($H{r}="","",ROUND($H{r}*VLOOKUP($G{r},Profils!$A$3:$F$20,{pcol},FALSE),1))')
+dv_dc = DataValidation(type="list", formula1="Parametres!$B$12:$B$14", allow_blank=True)
+ws.add_data_validation(dv_dc)
+dv_dc.add("A3:A100")
+dv_cat = DataValidation(type="list", formula1="Profils!$A$3:$A$20", allow_blank=True)
+ws.add_data_validation(dv_cat)
+dv_cat.add("G3:G100")
 
 # ---------------------------------------------------------------- Resultats
 ws = wb.create_sheet("Resultats")
 set_widths(ws, [34, 16, 16, 20, 22, 40])
-ws["A1"] = "VOLUMETRIE DATACENTER - RESULTATS"
+ws["A1"] = "VOLUMETRIE GLOBALE - RESULTATS"
 ws["A1"].font = TITLE_FONT
 
-DIRECTIONS = [("Sortant internet", "I"), ("Entrant internet", "J"),
-              ("Interne LAN (Est-Ouest)", "K"), ("Replication inter-DC", "L")]
+DIRECTIONS = [("Sortant internet", "J"), ("Entrant internet", "K"),
+              ("Interne LAN (Est-Ouest)", "L"), ("Replication inter-DC", "M")]
 
-ws["A3"] = "1. VOLUMETRIE ACTUELLE"
+ws["A3"] = "1. VOLUMETRIE ACTUELLE (tous datacenters)"
 ws["A3"].font = SEC_FONT
-ws["A3"].fill = SEC_FILL
 for c in range(1, 7):
     ws.cell(row=3, column=c).fill = SEC_FILL
 hdr = ["Flux", "Moyen (Mbps)", "Crete (Mbps)", "Volume mensuel moyen (To)", "Volume mensuel si crete permanente (To)", "Commentaire"]
@@ -251,13 +272,98 @@ dim = [
     ("Capacite coeur requise - internet (Gb/s)", f"=(C{proj_start}+C{proj_start+1})/1000", "crete projetee sortant + entrant"),
     ("Capacite coeur requise - interne (Gb/s)", f"=(C{proj_start+2}+C{proj_start+3})/1000", "crete projetee LAN + replication"),
     ("Capacite coeur requise - totale (Gb/s)", f"=C{proj_total}/1000", "somme des cretes projettees"),
-    ("Uplink par POD conseille (Gb/s)", f"=ROUNDUP(C{proj_total}/1000/COUNTA(Inventaire!B3:B100),0)", "moyenne par POD, arrondie au Gb/s superieur"),
+    ("Uplink par POD conseille (Gb/s)", f"=ROUNDUP(C{proj_total}/1000/COUNTA(Inventaire!C3:C100),0)", "moyenne par POD, arrondie au Gb/s superieur"),
 ]
 for label, formula, note in dim:
     ws.cell(row=r, column=1, value=label).font = Font(bold=True)
     ws.cell(row=r, column=2, value=formula).number_format = NUM0
     ws.cell(row=r, column=3, value=note).font = Font(italic=True, color="808080")
     r += 1
+
+# ---------------------------------------------------------------- Synthese DC
+ws = wb.create_sheet("Synthese DC")
+set_widths(ws, [18, 16, 16, 17, 17, 16, 19, 20])
+ws["A1"] = "SYNTHESE PAR DATACENTER"
+ws["A1"].font = TITLE_FONT
+
+ws["A3"] = "1. VOLUMETRIE PAR DATACENTER"
+ws["A3"].font = SEC_FONT
+for c in range(1, 9):
+    ws.cell(row=3, column=c).fill = SEC_FILL
+hdr = ["Datacenter", "Moyen total (Mbps)", "Crete totale (Mbps)", "Sortant internet (Mbps)",
+       "Entrant internet (Mbps)", "Interne LAN (Mbps)", "Replication inter-DC (Mbps)", "Volume mensuel moyen (To)"]
+for c, h in enumerate(hdr, start=1):
+    ws.cell(row=4, column=c, value=h)
+style_header(ws, 4, len(hdr))
+for i in range(3):
+    r = 5 + i
+    prow = 12 + i
+    ws.cell(row=r, column=1, value=f"=Parametres!$B${prow}").font = Font(bold=True)
+    ws.cell(row=r, column=2, value=f"=SUMIF(Inventaire!$A$3:$A$100,$A{r},Inventaire!H$3:H$100)").number_format = NUM0
+    ws.cell(row=r, column=3, value=f"=SUMIF(Inventaire!$A$3:$A$100,$A{r},Inventaire!I$3:I$100)").number_format = NUM0
+    ws.cell(row=r, column=4, value=f"=SUMIF(Inventaire!$A$3:$A$100,$A{r},Inventaire!J$3:J$100)").number_format = NUM0
+    ws.cell(row=r, column=5, value=f"=SUMIF(Inventaire!$A$3:$A$100,$A{r},Inventaire!K$3:K$100)").number_format = NUM0
+    ws.cell(row=r, column=6, value=f"=SUMIF(Inventaire!$A$3:$A$100,$A{r},Inventaire!L$3:L$100)").number_format = NUM0
+    ws.cell(row=r, column=7, value=f"=SUMIF(Inventaire!$A$3:$A$100,$A{r},Inventaire!M$3:M$100)").number_format = NUM0
+    ws.cell(row=r, column=8, value=f"=B{r}*0.0108*{P_JOURS}").number_format = NUM1
+ws.cell(row=8, column=1, value="GLOBAL").font = Font(bold=True)
+for c in range(2, 9):
+    col = get_column_letter(c)
+    ws.cell(row=8, column=c, value=f"=SUM({col}5:{col}7)").number_format = NUM1
+    ws.cell(row=8, column=c).font = Font(bold=True)
+ws.cell(row=9, column=1, value="NB : la replication inter-DC est comptee aux deux extremites dans le GLOBAL (voir section 2).").font = Font(italic=True, color="808080")
+
+ws["A11"] = "2. TRAFIC WAN INTER-DC"
+ws["A11"].font = SEC_FONT
+for c in range(1, 9):
+    ws.cell(row=11, column=c).fill = SEC_FILL
+wan = [
+    ("Replication totale - moyenne (Mbps)", "=G8", "somme des trois sites (double comptage)", NUM0),
+    ("Replication totale - crete (Mbps)", f"=G8*{P_CRETE}", "base de dimensionnement WAN", NUM0),
+    ("Volume unique - replication (To/mois)", f"=G8*0.0108*{P_JOURS}/2", "decompte simple : flux compté une seule fois", NUM1),
+    ("WAN inter-DC a provisionner (Gb/s)", "=ROUNDUP(G8*Parametres!$B$5/1000,0)", "les deux extremites transportent le flux", NUM0),
+]
+for r, (label, formula, note, fmt) in enumerate(wan, start=12):
+    ws.cell(row=r, column=1, value=label).font = Font(bold=True)
+    ws.cell(row=r, column=2, value=formula).number_format = fmt
+    ws.cell(row=r, column=3, value=note).font = Font(italic=True, color="808080")
+
+ws["A17"] = "3. SCENARIO DE BASCULE (N+1)"
+ws["A17"].font = SEC_FONT
+for c in range(1, 9):
+    ws.cell(row=17, column=c).fill = SEC_FILL
+ws["A18"] = "Datacenter defaillant"
+ws["B18"] = "DC1"
+ws["B18"].border = THIN
+ws["B18"].fill = PatternFill("solid", fgColor="FFF2CC")
+ws["C18"] = "menu deroulant : noms definis dans Parametres"
+ws["C18"].font = Font(italic=True, color="808080")
+ws["A19"] = "Taux de bascule"
+c = ws["B19"]
+c.value = 1.0
+c.number_format = PCT
+c.border = THIN
+c.fill = PatternFill("solid", fgColor="FFF2CC")
+ws["C19"] = "1 = PRA complet, 0,5 = bascule de la moitie des charges"
+ws["C19"].font = Font(italic=True, color="808080")
+hdr = ["Datacenter", "Crete propre (Mbps)", "Crete absorbee (Mbps)", "Crete apres bascule (Mbps)", "Capacite coeur requise (Gb/s)"]
+for c, h in enumerate(hdr, start=1):
+    ws.cell(row=21, column=c, value=h)
+style_header(ws, 21, len(hdr))
+for i in range(3):
+    r = 22 + i
+    src = 5 + i
+    prow = 12 + i
+    ws.cell(row=r, column=1, value=f"=Parametres!$B${prow}")
+    ws.cell(row=r, column=2, value=f"=C{src}").number_format = NUM0
+    ws.cell(row=r, column=3,
+            value=f"=IF($A{r}=$B$18,0,SUMIF(Inventaire!$A$3:$A$100,$B$18,Inventaire!$I$3:$I$100)*$B$19)").number_format = NUM0
+    ws.cell(row=r, column=4, value=f"=B{r}+C{r}").number_format = NUM0
+    ws.cell(row=r, column=5, value=f"=D{r}/1000").number_format = NUM1
+ws.cell(row=26, column=1, value="Dimensionner chaque site survivant sur sa ligne ; le site defaillant affiche 0.").font = Font(italic=True, color="808080")
+dv_fail = DataValidation(type="list", formula1="Parametres!$B$12:$B$14", allow_blank=True)
+ws.add_data_validation(dv_fail)
+dv_fail.add("B18")
 
 wb.save(OUT)
 print(f"OK -> {OUT}")
